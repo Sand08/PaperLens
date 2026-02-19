@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+pdf/
+
+# macOS
+.DS_Store
+
+# secrets/env
+.env
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# local runtime artifacts
+tmp/
+qdrant_data/
+faiss.index
+chunks.pkl
+embeddings.parquet
+
+# IDE
+.vscode/
+.idea/
