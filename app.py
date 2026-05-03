@@ -57,11 +57,9 @@ def load_config():
 # Load configuration before other imports
 load_config()
 
-import json
 import uuid
 import time
 import hashlib
-import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 import atexit
@@ -70,20 +68,19 @@ import atexit
 from backend.utils import extract_text_and_images_from_pdf, simple_chunk_text
 from backend.embeddings.embedder import LocalTransformerEmbeddings
 from backend.vector_store.qdrant_store import QdrantStore
-from backend.graphs.metadata_graph import run_metadata_graph
 from backend.graphs.rag_graph import run_rag_graph
 from backend.graphs.monitor import get_callback, traced_span, begin_trace
 
 # ───────────────── configuration ─────────────────
 st.set_page_config(
-    page_title="PDF Metadata Extractor & Chatbot",
+    page_title="Grounded PDF Reader",
     page_icon="📘",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📘 PDF Metadata Extractor & Chatbot")
-st.caption("Extract module metadata, index your document, and chat with it — with Langfuse tracing.")
+st.title("📘 Grounded PDF Reader")
+st.caption("Index your document and chat with grounded context — with Langfuse tracing.")
 
 # Ensure Langfuse exists
 cb = get_callback()
@@ -104,7 +101,6 @@ def _init_session():
     ss.setdefault("conversation_id", str(uuid.uuid4()))
     ss.setdefault("pdf_tmp_path", os.path.join("tmp", f"{ss['conversation_id']}.pdf"))
     ss.setdefault("history", [])
-    ss.setdefault("metadata", None)
     ss.setdefault("uploaded_pdf_bytes", None)
     ss.setdefault("llm_sel", MODEL_OPTIONS[0])
     ss.setdefault("pdf_text_cache", "")
@@ -119,7 +115,7 @@ _init_session()
 # Single Langfuse trace per session
 begin_trace(
     trace_name=st.session_state["conversation_id"],
-    app="pdf-metadata-rag",
+    app="grounded-pdf-reader",
     started_at=str(datetime.utcnow()),
 )
 
@@ -167,27 +163,6 @@ def add_message(role: str, content: str, meta: Optional[Dict[str, Any]] = None):
     st.session_state["history"].append(
         {"role": role, "content": content, "ts": time.time(), "meta": meta or {}}
     )
-
-def run_metadata():
-    if not st.session_state["pdf_text_cache"]:
-        st.warning("Load or index the PDF first.")
-        return
-    try:
-        with traced_span(
-            "metadata_request",
-            conversation_id=st.session_state["conversation_id"],
-            action="metadata",
-        ):
-            md = run_metadata_graph(
-                text=st.session_state["pdf_text_cache"],
-                llm_model=st.session_state["llm_sel"],
-                span_attrs={"conversation_id": st.session_state["conversation_id"]},
-            )
-        st.session_state["metadata"] = md
-        add_message("assistant", "Metadata extracted. Toggle 'Table view' to inspect or download below.", {"type": "metadata"})
-    except Exception as e:
-        st.error(f"Metadata extraction failed: {e}")
-        add_message("assistant", f"Metadata extraction failed: {e}")
 
 def ensure_indexing() -> str:
     if not st.session_state["has_pdf"]:
@@ -301,16 +276,14 @@ def render_edit_controls(idx: int, content: str):
 
 def suggested_questions() -> List[str]:
     base = [
-        "Give a high-level summary of this PDF.",
-        "What are the assessment methods?",
-        "List key dates and deadlines.",
-        "Who are the instructors and what are their contact details?",
-        "What are the learning outcomes?",
-        "Are there any prerequisites or required readings?",
+        "Give a high-level summary of this document.",
+        "What is the main problem and proposed solution?",
+        "List the key methods or models mentioned.",
+        "What datasets, metrics, or benchmarks are used?",
+        "What are the main results and conclusions?",
+        "What limitations or future work are discussed?",
     ]
-    if st.session_state.get("metadata"):
-        base.insert(0, "Show the extracted metadata in a concise list.")
-    
+
     # Only show "Run indexing" if we definitely don't have an index
     if st.session_state["has_pdf"] and not st.session_state["has_index"] and not check_existing_index():
         base.insert(0, "Run indexing")
@@ -322,8 +295,6 @@ def handle_suggestion_click(q: str):
     if q.lower() == "run indexing":
         msg = ensure_indexing()
         add_message("assistant", msg)
-    elif q.lower() in {"metadata", "show metadata"}:
-        run_metadata()
     else:
         ans = answer_question(q)
         add_message("assistant", ans)
@@ -353,7 +324,6 @@ with st.sidebar:
                 f.write(b)
             st.session_state["has_pdf"] = True
             st.session_state["has_index"] = False  # Only reset on new PDF
-            st.session_state["metadata"] = None
             st.session_state["pdf_text_cache"] = ""
             st.session_state["chunk_count"] = 0
             st.session_state["current_pdf_hash"] = new_hash
@@ -380,13 +350,6 @@ with st.sidebar:
             with st.spinner("Indexing PDF..."):
                 msg = ensure_indexing()
             st.write(msg)
-            
-            if st.session_state.get("has_index"):
-                try:
-                    run_metadata()
-                    st.success("Metadata extracted.")  # optional toast
-                except Exception as e:
-                    st.error(f"Metadata extraction failed: {e}")
 
 
     # Enhanced status display with double-check
@@ -452,39 +415,6 @@ with col_left:
                 render_edit_controls(i, msg["content"])
 
 with col_right:
-    st.subheader("Metadata")
-    md = st.session_state.get("metadata")
-    if md:
-        table_view = st.toggle("Table view", value=True, key="toggle_table_view")
-        if table_view:
-            df = pd.DataFrame(
-                [{"Field": k, "Value": ("" if v is None else v)} for k, v in md.items()]
-            )
-            st.dataframe(df, use_container_width=True, hide_index=True, height=280)
-        else:
-            st.json(md)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(
-                "metadata.json",
-                data=json.dumps(md, indent=2),
-                file_name="metadata.json",
-                mime="application/json",
-                key="dl_md_json",
-            )
-        with c2:
-            df = pd.DataFrame([md])
-            st.download_button(
-                "metadata.csv",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name="metadata.csv",
-                mime="text/csv",
-                key="dl_md_csv",
-            )
-    else:
-        st.info("No metadata yet. Click 'Metadata' in chat or the sidebar after uploading/indexing.")
-
-    st.divider()
     st.subheader("Status")
     
     # Enhanced status display
@@ -501,7 +431,7 @@ for i, q in enumerate(suggested_questions()):
     st.button(q, key=f"sugg_{i}", on_click=handle_suggestion_click, args=(q,))
 
 # ───────────────── chat input ─────────────────
-user_input = st.chat_input("Ask about the document, or type: 'run indexing', 'metadata', 'preview pdf'", key="chat_input_main")
+user_input = st.chat_input("Ask about the document, or type: 'run indexing', 'preview pdf' (example: summarize methods and results)", key="chat_input_main")
 
 if user_input:
     add_message("user", user_input)
@@ -520,9 +450,6 @@ if user_input:
             assistant_text = st.session_state["pdf_text_cache"][:2000] or "No text found."
     elif cmd in {"run indexing", "index", "indexing"}:
         assistant_text = ensure_indexing()
-    elif cmd in {"metadata", "show metadata"}:
-        run_metadata()
-        assistant_text = None
     else:
         assistant_text = answer_question(user_input)
 
