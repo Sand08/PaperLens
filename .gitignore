@@ -26,3 +26,4 @@ embeddings.parquet
 # IDE
 .vscode/
 .idea/
+.streamlit/
